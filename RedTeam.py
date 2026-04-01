@@ -9,7 +9,7 @@ import time
 LM_STUDIO_URL = "http://localhost:1234/v1"
 TARGET = "http://159.203.87.83:8080"
 CTFD_URL = "http://159.203.87.83:8000"
-CTFD_TOKEN = "ctfd_7a87222d5e0ac284965d7d39ef5258a69666087655c6ce5910c2670ae727d07d"  # ← your token
+CTFD_TOKEN = " ctfd_c71ece44ffa15cb35b481321bc9e9d053c5bd5a94b02c2ab16a919a5b4133997"  # ← your token
 
 CHALLENGES = {
     "sql_injection": 1,
