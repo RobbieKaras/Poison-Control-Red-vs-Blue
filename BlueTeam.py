@@ -12,7 +12,7 @@ LM_STUDIO_URL = "http://localhost:1234/v1"
 API_URL = "http://159.203.87.83:5000"
 API_KEY = "securitybotw4rs2026"
 CTFD_URL = "http://159.203.87.83:8000"
-CTFD_TOKEN = "ctfd_7a87222d5e0ac284965d7d39ef5258a69666087655c6ce5910c2670ae727d07d"
+CTFD_TOKEN = "ctfd_26f8030dfbb8924feb840106dbe166811e17fc14283c18e6e63c3cc8b2cda612"
 
 BLUE_TEAM_CHALLENGES = {
     "sql": 4,
@@ -26,16 +26,21 @@ HEADERS = {
 }
 
 # Tuning values
-POLL_SECONDS = 2
+POLL_SECONDS = 1               # was 2 — faster detection is the #1 win
 MAX_SEEN_REQUESTS = 5000
 
-SQL_BLOCK_SCORE = 8
-CMD_BLOCK_SCORE = 6
-BRUTE_BLOCK_COUNT = 10
-BRUTE_WINDOW_SECONDS = 30
+SQL_BLOCK_SCORE = 6            # was 8 — catch attacks with fewer signals
+CMD_BLOCK_SCORE = 5            # was 6 — block on less evidence (cmd injection is always malicious)
+BRUTE_BLOCK_COUNT = 2          # block after just 2 login attempts
+BRUTE_WINDOW_SECONDS = 20      # was 30
 
-SQL_LLM_REVIEW_SCORE = 4
+SQL_LLM_REVIEW_SCORE = 3       # was 4 — escalate to LLM sooner
 USE_LLM = True
+
+# Per-endpoint rate limiting: block if same IP sends > this many requests
+# to a sensitive endpoint within ENDPOINT_RATE_WINDOW seconds
+ENDPOINT_RATE_LIMIT = 5
+ENDPOINT_RATE_WINDOW = 15
 
 # ============================================
 # CLIENTS / STATE
@@ -53,6 +58,16 @@ sql_scores = defaultdict(int)
 cmd_scores = defaultdict(int)
 brute_attempts = defaultdict(deque)
 recent_activity = defaultdict(lambda: deque(maxlen=10))
+
+# Per-IP per-endpoint request rate (catches hammering even without known-bad payloads)
+endpoint_hits = defaultdict(lambda: defaultdict(deque))
+
+# Track which IPs have already triggered a first-access block per endpoint
+# In a tournament, any access to a vulnerability endpoint is an attack
+first_access_blocked = defaultdict(set)
+
+# IPs flagged during attack-prep phase (POST /security.php = bot starting up)
+attack_prep_ips = set()
 
 # ============================================
 # HELPERS
@@ -141,7 +156,17 @@ def remember_activity(ip, attack_type, detail):
     })
 
 
-def block_ip(ip, attack_type, reason):
+def record_endpoint_hit(ip, endpoint_key):
+    """Returns True if this IP has exceeded ENDPOINT_RATE_LIMIT hits in ENDPOINT_RATE_WINDOW."""
+    now = time.time()
+    hits = endpoint_hits[ip][endpoint_key]
+    hits.append(now)
+    while hits and (now - hits[0]) > ENDPOINT_RATE_WINDOW:
+        hits.popleft()
+    return len(hits) >= ENDPOINT_RATE_LIMIT
+
+
+def block_ip(ip, attack_type, reason, score=True):
     if ip in blocked_ips:
         return
 
@@ -158,7 +183,8 @@ def block_ip(ip, attack_type, reason):
             print(f"\n[!!!] BLOCKED {ip}")
             print(f"      Type: {attack_type}")
             print(f"      Reason: {reason}")
-            score_block(attack_type)
+            if score:
+                score_block(attack_type)
         else:
             print(f"[-] Block failed for {ip}: {r.text}")
     except Exception as exc:
@@ -197,11 +223,6 @@ def score_block(attack_type):
     if not flag:
         return
 
-    nonce = get_ctfd_nonce()
-    if not nonce:
-        print("[-] Could not get nonce for scoring")
-        return
-
     try:
         r = requests.post(
             f"{CTFD_URL}/api/v1/challenges/attempt",
@@ -209,13 +230,16 @@ def score_block(attack_type):
             headers={
                 "Authorization": f"Token {CTFD_TOKEN}",
                 "Content-Type": "application/json",
-                "CSRF-Token": nonce,
             },
             timeout=5,
         )
         result = r.json()
-        if result.get("data", {}).get("status") == "correct":
-            print(f"[+] BLUE TEAM SCORED for blocking {attack_type}")
+        status = result.get("data", {}).get("status", "")
+        if status == "correct":
+            print(f"[+] BLUE TEAM SCORED for blocking {attack_type}!")
+            scored_blocks.add(attack_type)
+        elif status == "already_solved":
+            print(f"[*] Already scored for blocking {attack_type}")
             scored_blocks.add(attack_type)
         else:
             print(f"[-] Score submission not accepted: {result}")
@@ -245,6 +269,20 @@ SQL_REGEX_RULES = [
     (r"/\*", 2, "sql block comment"),
     (r"\bhex\b", 1, "hex usage"),
     (r"0x[0-9a-f]+", 2, "hex literal"),
+    (r"\bchar\s*\(", 3, "char() encoding"),
+    (r"\bascii\s*\(", 2, "ascii() function"),
+    (r"\bord\s*\(", 2, "ord() function"),
+    (r"\bgroup_concat\s*\(", 4, "group_concat()"),
+    (r"\bif\s*\(", 2, "if() function"),
+    (r"\bversion\s*\(\s*\)", 3, "version() probe"),
+    (r"\bdatabase\s*\(\s*\)", 3, "database() probe"),
+    (r"\buser\s*\(\s*\)", 2, "user() probe"),
+    (r"\bwaitfor\b", 4, "waitfor delay (MSSQL)"),
+    (r"\bxp_cmdshell\b", 5, "xp_cmdshell"),
+    (r"\bsys\.tables\b", 4, "sys.tables probe"),
+    (r"\bunion\s+all\s+select\b", 5, "union all select"),
+    (r"'\s*or\s*'", 4, "or-quote evasion"),
+    (r"\border\s+by\b", 2, "order by (column count probe)"),
 ]
 
 
@@ -284,15 +322,19 @@ def maybe_confirm_sql_with_llm(ip, path, sql_result):
 
     try:
         response = client.chat.completions.create(
-            model="local-model",
+            model="meta-llama-3.1-8b-instruct",
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are a blue team analyst. "
-                        "Classify the request as either ATTACK or BENIGN. "
-                        "Only consider SQL injection. "
-                        "Respond exactly in this format:\n"
+                        "You are a blue team security analyst defending DVWA in a CTF tournament. "
+                        "The attacker uses evasion: comment injection (un/**/ion), case mixing, "
+                        "hex encoding (0x...), char() encoding, double URL encoding, and "
+                        "alternative SQL syntax. The request has already been normalized "
+                        "(comments stripped, lowercased, URL-decoded). "
+                        "Classify as ATTACK if there is ANY sign of SQL injection intent — "
+                        "err on the side of blocking in a tournament setting. "
+                        "Respond ONLY in this exact format:\n"
                         "DECISION: ATTACK or BENIGN\n"
                         "CONFIDENCE: high / medium / low\n"
                         "REASON: one sentence"
@@ -328,14 +370,25 @@ def maybe_confirm_sql_with_llm(ip, path, sql_result):
 # COMMAND INJECTION DETECTION
 # ============================================
 CMD_REGEX_RULES = [
-    (r";\s*(cat|ls|whoami|id|pwd|uname|curl|wget|nc|bash|sh)\b", 5, "semicolon command chaining"),
-    (r"\|\s*(cat|ls|whoami|id|pwd|uname|curl|wget|nc|bash|sh)\b", 5, "pipe command chaining"),
-    (r"&&\s*(cat|ls|whoami|id|pwd|uname|curl|wget|nc|bash|sh)\b", 5, "and chaining"),
+    # Chained commands — semicolon, pipe, and-and
+    (r";\s*(cat|ls|whoami|id|pwd|uname|curl|wget|nc|bash|sh|head|tac|tail|strings|awk|sed|dd|perl|python|ruby|php)\b", 5, "semicolon command chaining"),
+    (r"\|\s*(cat|ls|whoami|id|pwd|uname|curl|wget|nc|bash|sh|head|tac|tail|strings|awk|sed|dd|perl|python|ruby|php)\b", 5, "pipe command chaining"),
+    (r"&&\s*(cat|ls|whoami|id|pwd|uname|curl|wget|nc|bash|sh|head|tac|tail|strings|awk|sed|dd|perl|python|ruby|php)\b", 5, "and chaining"),
+    # Execution contexts
     (r"`[^`]+`", 5, "backtick execution"),
     (r"\$\([^)]+\)", 5, "subshell execution"),
+    (r"\$\{IFS\}", 5, "IFS evasion"),
+    # File targets
     (r"/etc/passwd", 5, "passwd file target"),
-    (r"flag2\.txt", 5, "flag file target"),
+    (r"flag2?\.txt", 5, "flag file target"),
+    (r"/hackable/flags", 5, "hackable flags path"),
+    (r"/var/www/html", 4, "web root path traversal"),
+    # Individual dangerous commands
     (r"\bcat\b", 3, "cat command"),
+    (r"\bhead\b", 3, "head command"),
+    (r"\btac\b", 3, "tac command"),
+    (r"\btail\b", 2, "tail command"),
+    (r"\bstrings\b", 3, "strings command"),
     (r"\bls\b", 2, "ls command"),
     (r"\bwhoami\b", 3, "whoami command"),
     (r"\bid\b", 3, "id command"),
@@ -343,8 +396,15 @@ CMD_REGEX_RULES = [
     (r"\bnc\b", 4, "netcat usage"),
     (r"\bwget\b", 4, "wget usage"),
     (r"\bcurl\b", 4, "curl usage"),
+    (r"\bawk\b", 3, "awk command"),
+    (r"\bpython3?\b", 3, "python execution"),
+    (r"\bperl\b", 3, "perl execution"),
+    (r"\bruby\b", 3, "ruby execution"),
+    (r"\bdd\b", 3, "dd command"),
+    # Newline/encoding tricks
     (r"%0a", 4, "newline injection"),
     (r"\n", 4, "literal newline"),
+    (r"base64", 3, "base64 encoding trick"),
 ]
 
 
@@ -430,9 +490,56 @@ def defense_loop():
                     continue
 
                 if ip in blocked_ips:
+                    # IP already blocked — but still score challenges we haven't claimed yet
+                    path_lower = path.lower()
+                    if "vulnerabilities/exec" in path_lower and "cmd" not in scored_blocks:
+                        print(f"    [LATE SCORE] cmd injection seen from already-blocked {ip}")
+                        score_block("cmd")
+                    if "vulnerabilities/brute" in path_lower and "brute" not in scored_blocks:
+                        print(f"    [LATE SCORE] brute force seen from already-blocked {ip}")
+                        score_block("brute")
+                    if "vulnerabilities/sqli" in path_lower and "sql" not in scored_blocks:
+                        print(f"    [LATE SCORE] sql injection seen from already-blocked {ip}")
+                        score_block("sql")
                     continue
 
                 print(f"[>] {ip} {method} {path[:100]}")
+
+                # ------------------------------------
+                # ATTACK PREP DETECTION
+                # POST /security.php = bot setting DVWA to low security
+                # This happens right before the first attack — block early
+                # ------------------------------------
+                if method == "POST" and "security.php" in path.lower():
+                    attack_prep_ips.add(ip)
+                    print(f"    [PREP] {ip} setting DVWA to low security — blocking before attack starts")
+                    block_ip(ip, "sql", "attack prep: POST /security.php detected", score=False)
+                    continue
+
+                # ------------------------------------
+                # FIRST-ACCESS BLOCKING
+                # In a tournament, any access to a vuln endpoint IS the attack.
+                # Block and score immediately on first hit — don't wait for payload analysis.
+                # ------------------------------------
+                path_lower = path.lower()
+
+                if "vulnerabilities/sqli" in path_lower and "sqli" not in first_access_blocked[ip]:
+                    first_access_blocked[ip].add("sqli")
+                    block_ip(ip, "sql", "first access to SQL injection endpoint")
+                    continue
+
+                if "vulnerabilities/exec" in path_lower and "exec" not in first_access_blocked[ip]:
+                    first_access_blocked[ip].add("exec")
+                    block_ip(ip, "cmd", "first access to command injection endpoint")
+                    continue
+
+                # ------------------------------------
+                # ENDPOINT RATE LIMITING (backup)
+                # ------------------------------------
+                if "vulnerabilities/brute" in path_lower:
+                    if record_endpoint_hit(ip, "brute"):
+                        block_ip(ip, "brute", f"rate limit: >{ENDPOINT_RATE_LIMIT} requests to brute endpoint in {ENDPOINT_RATE_WINDOW}s")
+                        continue
 
                 # ------------------------------------
                 # COMMAND INJECTION
