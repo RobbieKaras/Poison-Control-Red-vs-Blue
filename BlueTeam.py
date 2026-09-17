@@ -8,11 +8,11 @@ from openai import OpenAI
 # ============================================
 # CONFIGURATION
 # ============================================
-LM_STUDIO_URL = "http://localhost:1234/v1"
-API_URL = "http://159.203.87.83:5000"
-API_KEY = "securitybotw4rs2026"
-CTFD_URL = "http://159.203.87.83:8000"
-CTFD_TOKEN = "ctfd_26f8030dfbb8924feb840106dbe166811e17fc14283c18e6e63c3cc8b2cda612"
+LM_STUDIO_URL = 
+API_URL = 
+API_KEY = 
+CTFD_URL = 
+CTFD_TOKEN = 
 
 BLUE_TEAM_CHALLENGES = {
     "sql": 4,
